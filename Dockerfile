@@ -1,16 +1,17 @@
 # Dùng image Python chính thức
 FROM python:3.10-slim
 
-# Cài đặt Playwright dependencies
-RUN pip install --no-cache-dir playwright
-RUN playwright install-deps chromium
+# Cài đặt các thư viện hệ thống cần thiết cho OpenCV (ddddocr)
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
 
-# Cài thư viện Python và Chromium cho Playwright
+# Cài thư viện Python
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium
 
 # Copy toàn bộ code vào
 COPY . .

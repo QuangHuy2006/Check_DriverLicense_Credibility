@@ -291,7 +291,49 @@
                 <input type="password" id="adminKey" placeholder="Mật khẩu..." autocomplete="off">
             </div>
             <button type="button" id="exportExcelBtn" style="background: var(--success); max-width: 300px; margin: 0 auto;">📥 Xuất File Excel</button>
-            <button type="button" onclick="document.getElementById('adminPanel').classList.remove('visible')" style="background: rgba(148, 163, 184, 0.3); max-width: 300px; margin: 0.5rem auto 0 auto;">Ẩn</button>
+
+            <!-- Pre-load Section -->
+            <div style="margin-top: 1.5rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1.5rem;">
+                <h3 style="color: var(--text-main); margin-bottom: 0.5rem;">🌙 Pre-load Dữ Liệu Ban Đêm</h3>
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">Tải trước toàn bộ danh sách GPLX vào database để người dùng tra cứu nhanh tức thì.</p>
+                
+                <div style="display: flex; gap: 0.75rem; max-width: 360px; margin: 0 auto 1rem auto; align-items: center;">
+                    <label style="font-size: 0.85rem; color: var(--text-muted); white-space: nowrap;">⏱ Delay (giây):</label>
+                    <input type="number" id="preloadDelay" value="3" min="1" max="30" step="0.5" style="width: 80px; text-align: center;">
+                </div>
+
+                <input type="file" id="preloadFileInput" accept=".xlsx" style="display:none;">
+                <div style="display: flex; gap: 0.75rem; max-width: 360px; margin: 0 auto;">
+                    <button type="button" id="startPreloadBtn" style="flex: 1; background: var(--primary);">🚀 Bắt Đầu Pre-load</button>
+                    <button type="button" id="stopPreloadBtn" style="flex: 0 0 auto; background: var(--error); display: none;">⏹ Dừng</button>
+                </div>
+
+                <div id="preloadProgressWrap" style="display:none; max-width: 360px; margin: 1rem auto 0 auto;">
+                    <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.4rem;">
+                        <span id="preloadStatusText">Đang xử lý...</span>
+                        <span id="preloadPct">0%</span>
+                    </div>
+                    <div class="progress-container" style="margin: 0;">
+                        <div class="progress-bar" id="preloadBar" style="background: var(--primary);"></div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.8rem; text-align: center;">
+                        <div style="background: rgba(16,185,129,0.15); border-radius: 0.5rem; padding: 0.4rem;">
+                            <div style="color: var(--success); font-weight: 700; font-size: 1.1rem;" id="preloadDone">0</div>
+                            <div style="color: var(--text-muted);">Thành công</div>
+                        </div>
+                        <div style="background: rgba(148,163,184,0.1); border-radius: 0.5rem; padding: 0.4rem;">
+                            <div style="color: #94a3b8; font-weight: 700; font-size: 1.1rem;" id="preloadSkipped">0</div>
+                            <div style="color: var(--text-muted);">Đã có DB</div>
+                        </div>
+                        <div style="background: rgba(239,68,68,0.15); border-radius: 0.5rem; padding: 0.4rem;">
+                            <div style="color: var(--error); font-weight: 700; font-size: 1.1rem;" id="preloadFailed">0</div>
+                            <div style="color: var(--text-muted);">Thất bại</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <button type="button" onclick="document.getElementById('adminPanel').classList.remove('visible')" style="background: rgba(148, 163, 184, 0.3); max-width: 300px; margin: 1rem auto 0 auto;">Ẩn</button>
         </div>
     </div>
 
@@ -478,6 +520,78 @@
             if (!key) { showToast('Lỗi', 'Vui lòng nhập mật khẩu.', 'warning'); return; }
             window.location.href = '/api/export-excel?key=' + encodeURIComponent(key);
         });
+
+        // === PRE-LOAD ===
+        let preloadPollInterval = null;
+
+        document.getElementById('startPreloadBtn').addEventListener('click', () => {
+            document.getElementById('preloadFileInput').click();
+        });
+
+        document.getElementById('preloadFileInput').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const key = document.getElementById('adminKey').value.trim();
+            if (!key) { showToast('Lỗi', 'Vui lòng nhập mật khẩu quản trị.', 'warning'); return; }
+            const delay = parseFloat(document.getElementById('preloadDelay').value) || 3.0;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const resp = await fetch(`/api/admin/start-preload?key=${encodeURIComponent(key)}&delay=${delay}`, {
+                method: 'POST', body: formData
+            });
+            const data = await resp.json();
+            document.getElementById('preloadFileInput').value = '';
+
+            if (data.status === 'started') {
+                showToast('Pre-load', `Bắt đầu xử lý ${data.total} bản ghi!`, 'info', 4000);
+                document.getElementById('preloadProgressWrap').style.display = 'block';
+                document.getElementById('stopPreloadBtn').style.display = 'inline-block';
+                document.getElementById('startPreloadBtn').disabled = true;
+                _startPreloadPolling(key);
+            } else {
+                showToast('Lỗi', data.error || 'Lỗi không xác định.', 'error');
+            }
+        });
+
+        document.getElementById('stopPreloadBtn').addEventListener('click', async () => {
+            const key = document.getElementById('adminKey').value.trim();
+            await fetch(`/api/admin/stop-preload?key=${encodeURIComponent(key)}`, { method: 'POST' });
+            showToast('Pre-load', 'Đã gửi lệnh dừng. Đang chờ tác vụ hiện tại hoàn thành...', 'warning', 3000);
+        });
+
+        function _startPreloadPolling(key) {
+            if (preloadPollInterval) clearInterval(preloadPollInterval);
+            preloadPollInterval = setInterval(async () => {
+                const resp = await fetch(`/api/admin/preload-status?key=${encodeURIComponent(key)}`);
+                const s = await resp.json();
+                _updatePreloadUI(s);
+                if (!s.running) {
+                    clearInterval(preloadPollInterval);
+                    preloadPollInterval = null;
+                    document.getElementById('stopPreloadBtn').style.display = 'none';
+                    document.getElementById('startPreloadBtn').disabled = false;
+                    showToast('Pre-load Hoàn Tất', `✅ ${s.done} thành công | ⏭ ${s.skipped} bỏ qua | ❌ ${s.failed} thất bại`, 'success', 8000);
+                }
+            }, 2000);
+        }
+
+        function _updatePreloadUI(s) {
+            const total = s.total || 1;
+            const processed = s.done + s.skipped + s.failed;
+            const pct = Math.round((processed / total) * 100);
+            document.getElementById('preloadBar').style.width = pct + '%';
+            document.getElementById('preloadPct').innerText = pct + '%';
+            document.getElementById('preloadDone').innerText = s.done;
+            document.getElementById('preloadSkipped').innerText = s.skipped;
+            document.getElementById('preloadFailed').innerText = s.failed;
+            if (s.current) {
+                document.getElementById('preloadStatusText').innerText = `Đang xử lý: ${s.current} (${processed}/${total})`;
+            } else if (!s.running) {
+                document.getElementById('preloadStatusText').innerText = `Hoàn tất lúc ${s.started_at || ''}`;
+            }
+        }
 
         // === MODALS ===
         function closeInfoModal() { infoModal.classList.remove('active'); }

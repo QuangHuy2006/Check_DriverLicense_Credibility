@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+websockets
+playwright
+ddddocr
+opencv-python
+numpy
+python-multipart
+openpyxl
+
+supabase

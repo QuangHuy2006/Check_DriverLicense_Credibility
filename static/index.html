@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ Thống Xác Thực GPLX</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --card-border: rgba(255, 255, 255, 0.1);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --success: #10b981;
+            --error: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.15) 0px, transparent 50%);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+
+        .container { width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 2rem; }
+
+        .glass-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--card-border);
+            border-radius: 1rem;
+            padding: 2rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+
+        h1, h2 {
+            text-align: center;
+            margin-bottom: 1.5rem;
+            background: linear-gradient(to right, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .form-group { margin-bottom: 1.2rem; display: flex; flex-direction: column; gap: 0.5rem; }
+
+        label { font-size: 0.9rem; font-weight: 500; color: var(--text-muted); }
+
+        input, select {
+            width: 100%; padding: 0.75rem 1rem;
+            background: rgba(15, 23, 42, 0.6); border: 1px solid var(--card-border);
+            border-radius: 0.5rem; color: var(--text-main); font-size: 1rem; transition: all 0.2s;
+        }
+
+        input:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+
+        button {
+            width: 100%; padding: 0.75rem 1.5rem; background: var(--primary); color: white;
+            border: none; border-radius: 0.5rem; font-size: 1rem; font-weight: 600;
+            cursor: pointer; transition: all 0.2s; margin-top: 1rem;
+        }
+
+        button:hover:not(:disabled) { background: var(--primary-hover); transform: translateY(-2px); }
+        button:disabled { background: rgba(148, 163, 184, 0.2); color: var(--text-muted); cursor: not-allowed; transform: none; }
+
+        /* Progress Bar */
+        .progress-container { width: 100%; background-color: rgba(255,255,255,0.1); border-radius: 0.5rem; margin-top: 1rem; overflow: hidden; display: none; }
+        .progress-bar { height: 10px; background: linear-gradient(to right, #60a5fa, #34d399); width: 0%; transition: width 0.3s ease; }
+        #bulkStatus { font-size: 0.85rem; color: var(--text-muted); text-align: center; margin-top: 0.5rem; display: none; }
+
+        /* Toast Notification */
+        .toast-container {
+            position: fixed;
+            top: 1.5rem;
+            right: 1.5rem;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            max-width: 380px;
+        }
+
+        .toast {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--card-border);
+            border-radius: 0.75rem;
+            padding: 1rem 1.25rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            animation: toastIn 0.4s ease;
+            transition: opacity 0.3s, transform 0.3s;
+        }
+
+        .toast.toast-out {
+            opacity: 0;
+            transform: translateX(100%);
+        }
+
+        .toast-icon { font-size: 1.5rem; flex-shrink: 0; margin-top: 0.1rem; }
+        .toast-body { flex: 1; }
+        .toast-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.2rem; }
+        .toast-msg { font-size: 0.85rem; color: var(--text-muted); }
+
+        .toast-success { border-left: 3px solid var(--success); }
+        .toast-error { border-left: 3px solid var(--error); }
+        .toast-warning { border-left: 3px solid var(--warning); }
+        .toast-info { border-left: 3px solid var(--primary); }
+
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateX(100%); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        /* Result Card */
+        #resultCard { display: none; }
+        #resultCard.visible { display: block; animation: fadeUp 0.4s ease; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(15px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .result-header {
+            display: flex; align-items: center; gap: 0.75rem;
+            margin-bottom: 1.25rem; padding-bottom: 1rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .result-header .icon { font-size: 2rem; }
+        .result-header .title { font-size: 1.1rem; font-weight: 600; }
+        .result-header .subtitle { font-size: 0.85rem; color: var(--text-muted); }
+
+        .data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+        @media (max-width: 600px) { .data-grid { grid-template-columns: 1fr; } }
+        .data-item { background: rgba(0,0,0,0.2); padding: 0.75rem 1rem; border-radius: 0.5rem; display: flex; flex-direction: column; text-align: left; }
+        .data-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+        .data-value { font-weight: 500; font-size: 0.95rem; }
+
+        /* Admin Panel (hidden by default) */
+        #adminPanel { display: none; }
+        #adminPanel.visible { display: block; animation: fadeUp 0.4s ease; }
+
+        /* === RESPONSIVE MOBILE === */
+        @media (max-width: 640px) {
+            body { padding: 1rem; }
+            
+            .glass-card { padding: 1.25rem; border-radius: 0.75rem; }
+            
+            h1 { font-size: 1.4rem; margin-bottom: 1rem; }
+            h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+            
+            input, select { font-size: 0.9rem; padding: 0.65rem 0.75rem; }
+            button { font-size: 0.9rem; padding: 0.65rem 1rem; }
+            
+            /* Nút Quét Ảnh xuống dòng riêng trên mobile */
+            #uploadBtn { font-size: 0.8rem !important; padding: 0.65rem 0.75rem !important; }
+            
+            /* 2 nút Tra cứu đơn / Hàng loạt xếp dọc */
+            #verifyForm > div:last-of-type:not(.progress-container):not(#bulkStatus) {
+                flex-direction: column !important;
+            }
+            
+            /* Toast nhỏ gọn hơn */
+            .toast-container { top: 0.75rem; right: 0.75rem; left: 0.75rem; max-width: none; }
+            .toast { padding: 0.75rem 1rem; }
+            .toast-icon { font-size: 1.2rem; }
+            .toast-title { font-size: 0.85rem; }
+            .toast-msg { font-size: 0.8rem; }
+            
+            /* Modal chiếm gần hết màn hình */
+            .modal { max-width: 95%; margin: 0 auto; }
+            
+            /* Result card */
+            .result-header .title { font-size: 1rem; }
+            .result-header .icon { font-size: 1.5rem; }
+            .data-value { font-size: 0.85rem; }
+        }
+
+        @media (max-width: 380px) {
+            body { padding: 0.5rem; }
+            .glass-card { padding: 1rem; }
+            h1 { font-size: 1.2rem; }
+        }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7); backdrop-filter: blur(5px);
+            display: flex; justify-content: center; align-items: center;
+            z-index: 50; opacity: 0; pointer-events: none; transition: opacity 0.3s;
+        }
+        .modal-overlay.active { opacity: 1; pointer-events: auto; }
+        .modal {
+            width: 100%; max-width: 450px; max-height: 85vh; overflow-y: auto;
+            text-align: center; transform: translateY(20px); transition: transform 0.3s;
+        }
+        .modal::-webkit-scrollbar { width: 6px; }
+        .modal::-webkit-scrollbar-track { background: transparent; }
+        .modal::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 10px; }
+        .modal-overlay.active .modal { transform: translateY(0); }
+
+        .captcha-img-container { background: white; padding: 0.5rem; border-radius: 0.5rem; display: inline-block; margin: 1rem 0; }
+        .captcha-img-container img { max-width: 100%; height: auto; border-radius: 0.25rem; }
+
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1); border-left-color: var(--primary);
+            border-radius: 50%; width: 40px; height: 40px;
+            animation: spin 1s linear infinite; margin: 0 auto 1rem auto; display: none;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <div class="container">
+        <!-- Main Form -->
+        <div class="glass-card">
+            <h1>Tra Cứu GPLX</h1>
+            
+            <form id="verifyForm">
+                <div class="form-group" style="position: relative;">
+                    <label for="gplx">Số Giấy Phép Lái Xe</label>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <input type="text" id="gplx" placeholder="Nhập số GPLX..." required style="flex: 1;">
+                        <input type="file" id="imageUpload" accept="image/*" style="display: none;">
+                        <button type="button" id="uploadBtn" style="width: auto; margin-top: 0; background: rgba(245, 158, 11, 0.8); padding: 0.75rem 1rem;" title="Tải ảnh lên quét tự động">📸 Quét Ảnh</button>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="dob">Ngày Sinh</label>
+                    <input type="text" id="dob" placeholder="dd/mm/yyyy hoặc yyyy" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="loai_bang">Loại Bằng</label>
+                    <select id="loai_bang">
+                        <option value="PET">Bằng PET (Có mã QR)</option>
+                        <option value="OLD">Bằng Giấy Cũ</option>
+                    </select>
+                </div>
+
+                <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                    <button type="submit" id="submitBtn" style="flex: 1; margin-top: 0;">Tra Cứu Đơn</button>
+                    
+                    <input type="file" id="bulkExcelUpload" accept=".xlsx" style="display: none;">
+                    <button type="button" id="bulkUploadBtn" style="flex: 1; margin-top: 0; background: var(--warning);">📁 Tra Cứu Hàng Loạt</button>
+                </div>
+                
+                <div class="progress-container" id="progressContainer">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+                <div id="bulkStatus"></div>
+            </form>
+        </div>
+
+        <!-- Result Card (hiển thị kết quả cho người lao động) -->
+        <div class="glass-card" id="resultCard">
+            <div class="result-header">
+                <div class="icon">✅</div>
+                <div>
+                    <div class="title" id="resultTitle">Xác Thực Thành Công</div>
+                    <div class="subtitle" id="resultSubtitle">Thông tin GPLX của bạn đã được xác nhận.</div>
+                </div>
+            </div>
+            <div class="data-grid" id="resultGrid"></div>
+        </div>
+
+        <!-- Admin Panel (ẩn, bật bằng Ctrl+Shift+A) -->
+        <div class="glass-card" id="adminPanel" style="text-align: center;">
+            <h2>⚙️ Quản Trị Viên</h2>
+            <div class="form-group" style="max-width: 300px; margin: 0 auto;">
+                <label>Nhập mật khẩu quản trị</label>
+                <input type="password" id="adminKey" placeholder="Mật khẩu..." autocomplete="off">
+            </div>
+            <button type="button" id="exportExcelBtn" style="background: var(--success); max-width: 300px; margin: 0 auto;">📥 Xuất File Excel</button>
+            <button type="button" onclick="document.getElementById('adminPanel').classList.remove('visible')" style="background: rgba(148, 163, 184, 0.3); max-width: 300px; margin: 0.5rem auto 0 auto;">Ẩn</button>
+        </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <div class="modal-overlay" id="infoModal">
+        <div class="glass-card modal">
+            <div id="infoSpinner" class="spinner"></div>
+            <div id="infoIcon" style="font-size: 3rem; margin-bottom: 1rem; display: none;">ℹ️</div>
+            <h2 id="infoTitle" style="margin-bottom: 0.5rem; font-size: 1.2rem;">Hệ Thống Đang Xử Lý</h2>
+            <p id="infoMessage" style="color: var(--text-muted); font-size: 1rem; margin-bottom: 1.5rem;">Đang kết nối...</p>
+            <button id="infoCloseBtn" style="background: var(--primary); display: none;" onclick="closeInfoModal()">Đóng</button>
+        </div>
+    </div>
+
+    <!-- Bulk Guide Modal -->
+    <div class="modal-overlay" id="bulkGuideModal">
+        <div class="glass-card modal" style="text-align: left; max-width: 520px;">
+            <h2 style="text-align: center; margin-bottom: 1rem; font-size: 1.3rem;">📁 Hướng Dẫn Tra Cứu Hàng Loạt</h2>
+            
+            <div style="background: rgba(0,0,0,0.3); border-radius: 0.75rem; padding: 1.25rem; margin-bottom: 1rem;">
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 0.75rem;">Chuẩn bị file Excel <code style="background: rgba(59,130,246,0.2); padding: 0.15rem 0.4rem; border-radius: 4px; color: #60a5fa;">.xlsx</code> với <strong style="color: var(--text-main);">3 cột</strong> như bên dưới:</p>
+                
+                <table style="width: 100%; font-size: 0.85rem; margin-bottom: 0.75rem;">
+                    <thead>
+                        <tr>
+                            <th style="color: #60a5fa; padding: 0.5rem;">Cột A: Số GPLX</th>
+                            <th style="color: #60a5fa; padding: 0.5rem;">Cột B: Ngày Sinh</th>
+                            <th style="color: #60a5fa; padding: 0.5rem;">Cột C: Loại Bằng</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding: 0.4rem 0.5rem; font-family: monospace; color: var(--text-main);">040092001234</td>
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-main);">15/06/1990</td>
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-main);">PET</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 0.4rem 0.5rem; font-family: monospace; color: var(--text-main);">051234567890</td>
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-main);">1985</td>
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-main);">OLD</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">
+                <p style="margin-bottom: 0.4rem;">📌 <strong style="color: var(--text-main);">Dòng 1</strong> là tiêu đề — hệ thống tự bỏ qua.</p>
+                <p style="margin-bottom: 0.4rem;">📌 <strong style="color: var(--text-main);">Loại Bằng</strong>: ghi <code style="background: rgba(16,185,129,0.2); padding: 0.1rem 0.3rem; border-radius: 4px; color: #34d399;">PET</code> (nhựa mới) hoặc <code style="background: rgba(245,158,11,0.2); padding: 0.1rem 0.3rem; border-radius: 4px; color: #fbbf24;">OLD</code> (giấy cũ). Để trống = PET.</p>
+                <p style="margin-bottom: 0.4rem;">⏱️ Hệ thống nghỉ <strong style="color: var(--text-main);">3 giây</strong> giữa mỗi lần để tránh bị chặn IP.</p>
+                <p>🔒 Nếu Captcha tự động sai — hệ thống sẽ <strong style="color: var(--warning);">tạm dừng</strong> để bạn nhập tay.</p>
+            </div>
+
+            <div style="display: flex; gap: 1rem;">
+                <button type="button" onclick="document.getElementById('bulkGuideModal').classList.remove('active')" style="flex: 1; background: rgba(148, 163, 184, 0.3);">Hủy</button>
+                <button type="button" id="bulkGuideConfirmBtn" style="flex: 1; background: var(--warning);">📂 Chọn File Excel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Captcha Modal -->
+    <div class="modal-overlay" id="captchaModal">
+        <div class="glass-card modal">
+            <h2 style="margin-bottom: 0.5rem; font-size: 1.2rem;">Yêu Cầu Nhập Captcha</h2>
+            <p style="color: var(--text-muted); font-size: 0.9rem;" id="captchaMessage">Hệ thống tự động giải không thành công. Vui lòng nhập mã bên dưới:</p>
+            
+            <div class="captcha-img-container">
+                <img id="captchaImage" src="" alt="Captcha">
+            </div>
+
+            <div class="form-group">
+                <input type="text" id="captchaInput" placeholder="Nhập mã Captcha..." autocomplete="off">
+            </div>
+            
+            <button id="submitCaptchaBtn" style="background: var(--success);">Gửi Mã</button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isBulkMode = false;
+        let bulkQueue = [];
+        let currentBulkIndex = 0;
+        let wsReadyState = false;
+
+        const submitBtn = document.getElementById('submitBtn');
+        const verifyForm = document.getElementById('verifyForm');
+        const captchaModal = document.getElementById('captchaModal');
+        const captchaImage = document.getElementById('captchaImage');
+        const captchaInput = document.getElementById('captchaInput');
+        const submitCaptchaBtn = document.getElementById('submitCaptchaBtn');
+        const captchaMessage = document.getElementById('captchaMessage');
+        const infoModal = document.getElementById('infoModal');
+        const infoTitle = document.getElementById('infoTitle');
+        const infoMessage = document.getElementById('infoMessage');
+        const infoSpinner = document.getElementById('infoSpinner');
+        const infoIcon = document.getElementById('infoIcon');
+        const infoCloseBtn = document.getElementById('infoCloseBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const bulkStatus = document.getElementById('bulkStatus');
+        const bulkUploadBtn = document.getElementById('bulkUploadBtn');
+        const bulkExcelUpload = document.getElementById('bulkExcelUpload');
+        const resultCard = document.getElementById('resultCard');
+        const resultGrid = document.getElementById('resultGrid');
+        const resultTitle = document.getElementById('resultTitle');
+        const resultSubtitle = document.getElementById('resultSubtitle');
+
+        // === TOAST NOTIFICATIONS ===
+        function showToast(title, message, type = 'info', duration = 5000) {
+            const container = document.getElementById('toastContainer');
+            const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
+            
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `
+                <div class="toast-icon">${icons[type] || icons.info}</div>
+                <div class="toast-body">
+                    <div class="toast-title">${title}</div>
+                    <div class="toast-msg">${message}</div>
+                </div>
+            `;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('toast-out');
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
+        // === RESULT CARD ===
+        function showResultCard(data) {
+            resultCard.classList.add('visible');
+            resultGrid.innerHTML = '';
+
+            if (typeof data === 'object' && !Array.isArray(data)) {
+                for (const [key, value] of Object.entries(data)) {
+                    if (value) {
+                        resultGrid.innerHTML += `
+                            <div class="data-item">
+                                <span class="data-label">${key}</span>
+                                <span class="data-value">${value}</span>
+                            </div>`;
+                    }
+                }
+            } else if (Array.isArray(data)) {
+                data.forEach(item => {
+                    if (typeof item === 'object') {
+                        for (const [key, value] of Object.entries(item)) {
+                            if (value) {
+                                resultGrid.innerHTML += `
+                                    <div class="data-item">
+                                        <span class="data-label">${key}</span>
+                                        <span class="data-value">${value}</span>
+                                    </div>`;
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Scroll xuống cho người dùng thấy kết quả
+            resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function hideResultCard() {
+            resultCard.classList.remove('visible');
+        }
+
+        // === ADMIN PANEL (Ctrl+Shift+A) ===
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+                e.preventDefault();
+                const panel = document.getElementById('adminPanel');
+                panel.classList.toggle('visible');
+                if (panel.classList.contains('visible')) {
+                    showToast('Quản Trị', 'Bảng điều khiển đã được bật.', 'info', 2000);
+                    panel.scrollIntoView({ behavior: 'smooth' });
+                }
+            }
+        });
+
+        document.getElementById('exportExcelBtn').addEventListener('click', () => {
+            const key = document.getElementById('adminKey').value.trim();
+            if (!key) { showToast('Lỗi', 'Vui lòng nhập mật khẩu.', 'warning'); return; }
+            window.location.href = '/api/export-excel?key=' + encodeURIComponent(key);
+        });
+
+        // === MODALS ===
+        function closeInfoModal() { infoModal.classList.remove('active'); }
+
+        function showLoading(message) {
+            infoModal.classList.add('active');
+            infoTitle.innerText = "Đang Xử Lý";
+            infoTitle.style.background = "linear-gradient(to right, #60a5fa, #34d399)";
+            infoTitle.style.webkitBackgroundClip = "text";
+            infoTitle.style.webkitTextFillColor = "transparent";
+            infoMessage.innerText = message;
+            infoSpinner.style.display = "block";
+            infoIcon.style.display = "none";
+            infoCloseBtn.style.display = "none";
+        }
+
+        function showErrorModal(title, message) {
+            infoModal.classList.add('active');
+            captchaModal.classList.remove('active');
+            infoTitle.innerText = title;
+            infoTitle.style.color = "var(--error)";
+            infoTitle.style.background = "none";
+            infoTitle.style.webkitTextFillColor = "var(--error)";
+            infoMessage.innerText = message;
+            infoSpinner.style.display = "none";
+            infoIcon.style.display = "block";
+            infoIcon.innerText = "❌";
+            infoCloseBtn.style.display = "block";
+        }
+
+        function lockUI(locked) {
+            submitBtn.disabled = locked;
+            bulkUploadBtn.disabled = locked;
+        }
+
+        function openWebSocket() {
+            return new Promise((resolve, reject) => {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                ws = new WebSocket(`${protocol}//${window.location.host}/ws/verify`);
+                ws.onopen = () => { wsReadyState = true; resolve(); };
+                ws.onerror = (e) => { reject(e); };
+                ws.onclose = () => { wsReadyState = false; };
+            });
+        }
+
+        // === TRA CỨU ĐƠN ===
+        verifyForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (isBulkMode) return;
+
+            const gplx = document.getElementById('gplx').value.trim();
+            const dob = document.getElementById('dob').value.trim();
+            const loai_bang = document.getElementById('loai_bang').value;
+            if (!gplx || !dob) return;
+
+            hideResultCard();
+            lockUI(true);
+            submitBtn.innerText = 'Đang Xử Lý...';
+            showLoading('Đang kết nối đến máy chủ...');
+
+            try {
+                await openWebSocket();
+                ws.onmessage = handleWebSocketMessage;
+                ws.send(JSON.stringify({ gplx, dob, loai_bang }));
+            } catch (err) {
+                showErrorModal("Lỗi Kết Nối", "Không thể kết nối đến máy chủ WebSocket!");
+                lockUI(false);
+                submitBtn.innerText = 'Tra Cứu Đơn';
+            }
+        });
+
+        // === TRA CỨU HÀNG LOẠT ===
+        bulkUploadBtn.addEventListener('click', () => {
+            document.getElementById('bulkGuideModal').classList.add('active');
+        });
+
+        document.getElementById('bulkGuideConfirmBtn').addEventListener('click', () => {
+            document.getElementById('bulkGuideModal').classList.remove('active');
+            bulkExcelUpload.click();
+        });
+
+        bulkExcelUpload.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+            showLoading('Đang đọc file Excel...');
+
+            try {
+                const response = await fetch('/api/upload-bulk', { method: 'POST', body: formData });
+                const data = await response.json();
+                closeInfoModal();
+
+                if (data.status === 'success' && data.data.length > 0) {
+                    bulkQueue = data.data;
+                    currentBulkIndex = 0;
+                    isBulkMode = true;
+                    lockUI(true);
+                    progressContainer.style.display = 'block';
+                    bulkStatus.style.display = 'block';
+                    updateBulkProgress();
+                    processNextBulkItem();
+                } else {
+                    showErrorModal("Lỗi", "Không tìm thấy dữ liệu hợp lệ trong file Excel.");
+                }
+            } catch (err) {
+                closeInfoModal();
+                showErrorModal("Lỗi Kết Nối", "Không thể phân tích file Excel.");
+            }
+            bulkExcelUpload.value = "";
+        });
+
+        function updateBulkProgress() {
+            const percentage = (currentBulkIndex / bulkQueue.length) * 100;
+            progressBar.style.width = percentage + "%";
+            bulkStatus.innerText = `Đang xử lý: ${currentBulkIndex} / ${bulkQueue.length}`;
+        }
+
+        async function processNextBulkItem() {
+            if (currentBulkIndex >= bulkQueue.length) {
+                isBulkMode = false;
+                progressBar.style.width = "100%";
+                progressContainer.style.display = 'none';
+                bulkStatus.innerText = `✅ Đã hoàn thành ${bulkQueue.length} bản ghi!`;
+                lockUI(false);
+                submitBtn.innerText = 'Tra Cứu Đơn';
+                showToast("Hoàn Thành", `Đã tra cứu xong ${bulkQueue.length} GPLX!`, "success", 8000);
+                return;
+            }
+
+            const item = bulkQueue[currentBulkIndex];
+            bulkStatus.innerText = `Đang xử lý ${currentBulkIndex + 1}/${bulkQueue.length}: ${item.gplx}...`;
+
+            try {
+                await openWebSocket();
+                ws.onmessage = handleWebSocketMessage;
+                ws.send(JSON.stringify({ gplx: item.gplx, dob: item.dob, loai_bang: item.loai_bang }));
+            } catch (err) {
+                bulkStatus.innerText = `Lỗi mạng khi xử lý ${item.gplx}. Thử lại...`;
+                setTimeout(processNextBulkItem, 5000);
+            }
+        }
+
+        // === XỬ LÝ WEBSOCKET CHUNG ===
+        function handleWebSocketMessage(event) {
+            const res = JSON.parse(event.data);
+            
+            if (res.type === 'status') {
+                if (!isBulkMode) showLoading(res.message);
+                else bulkStatus.innerText = `Đang xử lý ${currentBulkIndex + 1}/${bulkQueue.length}: ` + res.message;
+            } 
+            else if (res.type === 'require_manual_captcha') {
+                closeInfoModal();
+                captchaMessage.innerText = isBulkMode ? `[Hàng loạt tạm dừng] ` + res.message : res.message;
+                captchaImage.src = 'data:image/png;base64,' + res.image_base64;
+                captchaInput.value = '';
+                captchaModal.classList.add('active');
+                setTimeout(() => captchaInput.focus(), 100);
+            }
+            else if (res.type === 'success') {
+                closeInfoModal();
+                if (!isBulkMode) {
+                    // Toast ở góc trên phải
+                    showToast("Xác Thực Thành Công", "Thông tin GPLX đã được xác nhận!", "success");
+                    // Hiện kết quả chi tiết ở card bên dưới
+                    showResultCard(res.data);
+                    lockUI(false);
+                    submitBtn.innerText = 'Tra Cứu Đơn';
+                } else {
+                    showToast("OK", `${bulkQueue[currentBulkIndex].gplx} ✓`, "success", 2000);
+                    currentBulkIndex++;
+                    updateBulkProgress();
+                    let delay = res.source === 'database' ? 500 : 3000;
+                    bulkStatus.innerText = `Nghỉ ${delay/1000}s...`;
+                    setTimeout(processNextBulkItem, delay);
+                }
+            }
+            else if (res.type === 'error') {
+                if (!isBulkMode) {
+                    closeInfoModal();
+                    showToast("Không Thành Công", res.message, "error", 6000);
+                    lockUI(false);
+                    submitBtn.innerText = 'Tra Cứu Đơn';
+                } else {
+                    showToast("Lỗi", `${bulkQueue[currentBulkIndex].gplx}: ${res.message}`, "warning", 3000);
+                    currentBulkIndex++;
+                    updateBulkProgress();
+                    let delay = res.source === 'database' ? 500 : 3000;
+                    bulkStatus.innerText = `Nghỉ ${delay/1000}s...`;
+                    setTimeout(processNextBulkItem, delay);
+                }
+            }
+        }
+
+        // === CAPTCHA THỦ CÔNG ===
+        submitCaptchaBtn.addEventListener('click', () => {
+            const code = captchaInput.value.trim();
+            if (!code) { alert('Vui lòng nhập mã Captcha!'); return; }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ captcha_code: code }));
+                captchaModal.classList.remove('active');
+                if (!isBulkMode) showLoading('Đang gửi mã xác nhận...');
+                else bulkStatus.innerText = 'Đang gửi mã xác nhận...';
+            }
+        });
+        captchaInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') submitCaptchaBtn.click(); });
+
+        // === QUÉT ẢNH OCR ===
+        const imageUpload = document.getElementById('imageUpload');
+        const uploadBtn = document.getElementById('uploadBtn');
+        uploadBtn.addEventListener('click', () => { imageUpload.click(); });
+
+        imageUpload.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+            showLoading('Đang quét ảnh và trích xuất dữ liệu...');
+
+            try {
+                const response = await fetch('/api/upload-gplx', { method: 'POST', body: formData });
+                const data = await response.json();
+                closeInfoModal();
+
+                if (data.status === 'success') {
+                    if (data.gplx || data.dob) {
+                        if (data.gplx) document.getElementById('gplx').value = data.gplx;
+                        if (data.dob) document.getElementById('dob').value = data.dob;
+                        if (data.gplx && data.gplx.length === 12) document.getElementById('loai_bang').value = "PET";
+                        showToast("Quét Ảnh", "Đã tìm thấy thông tin! Kiểm tra lại trước khi tra cứu.", "success");
+                    } else {
+                        showToast("Quét Ảnh", "Không tìm thấy thông tin trên ảnh.", "warning");
+                    }
+                } else {
+                    showToast("Lỗi", "Lỗi quét ảnh: " + data.message, "error");
+                }
+            } catch (err) {
+                closeInfoModal();
+                showToast("Lỗi", "Lỗi kết nối khi quét ảnh.", "error");
+            }
+            imageUpload.value = "";
+        });
+    </script>
+</body>
+</html>

@@ -3,8 +3,6 @@ import sys
 import json
 import asyncio
 
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import time
 import base64
@@ -13,7 +11,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from collections import defaultdict
-from playwright.async_api import async_playwright
+import httpx
+from bs4 import BeautifulSoup
 import re
 import io
 import openpyxl
@@ -251,39 +250,58 @@ async def verify_gplx_ws(websocket: WebSocket):
             await websocket.close()
             return
 
-    await websocket.send_json({"type": "status", "message": "Đang khởi tạo trình duyệt ẩn..."})
+    await websocket.send_json({"type": "status", "message": "Đang kết nối hệ thống CSGT..."})
     
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage", # Chống crash do thiếu bộ nhớ /dev/shm trên Docker
-                "--disable-gpu",
-                "--single-process" # Tối ưu RAM cho gói Free của Render
-            ]
-        )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            locale="vi-VN"
-        )
-        page = await context.new_page()
-        
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    
+    async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
         try:
-            await page.goto("https://gplx.csgt.bocongan.gov.vn/", wait_until="networkidle")
-            security_token = await page.locator("input[name='securityToken']").get_attribute("value")
-            # 1: Giấy Cũ, 2: PET (Có thời hạn), 3: PET (Không thời hạn)
-            # Theo code cũ: PET = 2, Cũ = 1
+            # 1. Tải trang chủ để lấy securityToken & Cookies
+            resp = await client.get("https://gplx.csgt.bocongan.gov.vn/", headers=headers)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            sec_token_input = soup.find('input', {'name': 'securityToken'})
+            if not sec_token_input:
+                await websocket.send_json({"type": "error", "message": "Không thể kết nối với hệ thống CSGT (Thiếu token)."})
+                return
+            security_token = sec_token_input.get('value')
+            
             choose_gplx = "1" if loai_bang == "OLD" else "2"
             
             async def get_and_read_captcha(save_path="captcha_real.png"):
-                captcha_selector = ".img-cap-mobile a.captcha-refresh img"
-                await page.wait_for_selector(captcha_selector, timeout=5000)
-                captcha_element = await page.query_selector(captcha_selector)
-                await captcha_element.screenshot(path=save_path)
-                return doc_captcha_ddddocr(save_path)
-            
+                captcha_img = soup.select_one(".img-cap-mobile img")
+                if not captcha_img:
+                    return None
+                
+                # Cập nhật thời gian thực vào captcha src để tránh cache
+                import time
+                captcha_url = "https://gplx.csgt.bocongan.gov.vn" + captcha_img.get('src')
+                if '?' in captcha_url:
+                    captcha_url = re.sub(r't=\d+', f't={int(time.time()*1000)}', captcha_url)
+                
+                cap_resp = await client.get(captcha_url, headers=headers)
+                if cap_resp.status_code == 200:
+                    with open(save_path, "wb") as f:
+                        f.write(cap_resp.content)
+                    return doc_captcha_ddddocr(save_path)
+                return None
+                
+            async def get_manual_captcha_image():
+                captcha_img = soup.select_one(".img-cap-mobile img")
+                if not captcha_img:
+                    return None
+                import time
+                captcha_url = "https://gplx.csgt.bocongan.gov.vn" + captcha_img.get('src')
+                if '?' in captcha_url:
+                    captcha_url = re.sub(r't=\d+', f't={int(time.time()*1000)}', captcha_url)
+                cap_resp = await client.get(captcha_url, headers=headers)
+                if cap_resp.status_code == 200:
+                    return base64.b64encode(cap_resp.content).decode('utf-8')
+                return None
+
             async def submit_form(cap_code: str):
                 payload_data = {
                     "type": "",
@@ -298,26 +316,16 @@ async def verify_gplx_ws(websocket: WebSocket):
                     "moduleId": "8"
                 }
                 
-                api_url = "/api/Project/GPLX/ApiSearchGPLX/sendRequest?site=2005782"
-                raw_response = await page.evaluate(
-                    f"""async (formDataObj) => {{
-                        const searchParams = new URLSearchParams();
-                        for (const key in formDataObj) {{
-                            searchParams.append(key, formDataObj[key]);
-                        }}
-                        const res = await fetch('{api_url}', {{
-                            method: 'POST',
-                            headers: {{
-                                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                                'Accept': 'application/json, text/plain, */*'
-                            }},
-                            body: searchParams.toString()
-                        }});
-                        return res.text();
-                    }}""",
-                    payload_data
-                )
-                return await parse_response_to_data(raw_response)
+                api_url = "https://gplx.csgt.bocongan.gov.vn/api/Project/GPLX/ApiSearchGPLX/sendRequest?site=2005782"
+                
+                req_headers = headers.copy()
+                req_headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+                req_headers["Accept"] = "application/json, text/plain, */*"
+                req_headers["Origin"] = "https://gplx.csgt.bocongan.gov.vn"
+                req_headers["Referer"] = "https://gplx.csgt.bocongan.gov.vn/"
+                
+                res = await client.post(api_url, data=payload_data, headers=req_headers)
+                return await parse_response_to_data(res.text)
 
             # === AUTOMATIC OCR LOOP (MAX 2 TIMES) ===
             auto_attempts = 0
@@ -349,26 +357,19 @@ async def verify_gplx_ws(websocket: WebSocket):
             if not success_result:
                 await websocket.send_json({"type": "status", "message": "Giải Captcha tự động thất bại. Yêu cầu nhập tay."})
                 
-                # Vòng lặp cho phép nhập tay sai rồi nhập lại
                 while not success_result:
-                    # Lấy captcha mới nhất
-                    captcha_selector = ".img-cap-mobile a.captcha-refresh img"
-                    await page.wait_for_selector(captcha_selector, timeout=5000)
-                    captcha_element = await page.query_selector(captcha_selector)
-                    await captcha_element.screenshot(path="captcha_manual.png")
-                    
-                    with open("captcha_manual.png", "rb") as image_file:
-                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                    
-                    # Gửi yêu cầu nhập tay
+                    b64_img = await get_manual_captcha_image()
+                    if not b64_img:
+                        await websocket.send_json({"type": "error", "message": "Không thể tải mã Captcha."})
+                        break
+                        
                     await websocket.send_json({
                         "type": "require_manual_captcha",
-                        "image_base64": encoded_string,
+                        "image_base64": b64_img,
                         "message": "Vui lòng nhập mã Captcha bên dưới."
                     })
                     
                     try:
-                        # Đợi user gửi lên
                         user_resp = await websocket.receive_json()
                         manual_cap = user_resp.get("captcha_code", "")
                         
@@ -384,44 +385,42 @@ async def verify_gplx_ws(websocket: WebSocket):
                             break
                             
                     except WebSocketDisconnect:
-                        return # User ngắt kết nối
+                        return
             
             # === XỬ LÝ KẾT QUẢ ===
-            status = success_result.get("status")
-            if status == "success":
-                db.save_verification(gplx, dob, "success", success_result.get("data"))
-                logger.info(f"[{client_ip}] Xác thực thành công: GPLX={gplx}")
-                await websocket.send_json({
-                    "type": "success",
-                    "source": "live",
-                    "message": "Tra cứu thành công!",
-                    "data": success_result.get("data")
-                })
-            elif status == "not_found":
-                db.save_verification(gplx, dob, "not_found", None)
-                logger.info(f"[{client_ip}] Không tìm thấy: GPLX={gplx}")
-                await websocket.send_json({
-                    "type": "error",
-                    "source": "live",
-                    "message": "Không tìm thấy thông tin trên hệ thống (Cục CSGT)."
-                })
-            else:
-                db.save_verification(gplx, dob, "error", None)
-                logger.error(f"[{client_ip}] Lỗi: GPLX={gplx} - {success_result.get('message', '')}")
-                await websocket.send_json({
-                    "type": "error",
-                    "source": "live",
-                    "message": success_result.get("message", "Lỗi không xác định.")
-                })
-
+            if success_result:
+                status = success_result.get("status")
+                if status == "success":
+                    db.save_verification(gplx, dob, "success", success_result.get("data"))
+                    logger.info(f"[{client_ip}] Xác thực thành công: GPLX={gplx}")
+                    await websocket.send_json({
+                        "type": "success",
+                        "source": "live",
+                        "message": "Tra cứu thành công!",
+                        "data": success_result.get("data")
+                    })
+                elif status == "not_found":
+                    db.save_verification(gplx, dob, "not_found", None)
+                    logger.info(f"[{client_ip}] Không tìm thấy: GPLX={gplx}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "source": "live",
+                        "message": "Không tìm thấy thông tin trên hệ thống (Cục CSGT)."
+                    })
+                else:
+                    db.save_verification(gplx, dob, "error", None)
+                    logger.error(f"[{client_ip}] Lỗi: GPLX={gplx} - {success_result.get('message', '')}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "source": "live",
+                        "message": success_result.get("message", "Lỗi không xác định.")
+                    })
+        
         except Exception as e:
             import traceback
             traceback.print_exc()
             await websocket.send_json({"type": "error", "message": f"Lỗi hệ thống: {str(e)}"})
-        finally:
-            await browser.close()
             
-    # Đảm bảo đóng websocket (nếu chưa đóng do error block trên)
     try:
         await websocket.close()
     except Exception:

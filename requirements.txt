@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 websockets
-playwright
+httpx
+beautifulsoup4
 ddddocr
 opencv-python
 numpy

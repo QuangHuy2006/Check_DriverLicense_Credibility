@@ -8,6 +8,9 @@ import time
 from datetime import datetime
 import ddddocr
 import traceback
+import httpx
+from bs4 import BeautifulSoup
+import re
 
 # Ẩn cảnh báo rác
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -28,11 +31,71 @@ except Exception as e:
     print("💡 Cài đặt: pip install ddddocr")
     exit(1)
 
-# === HÀM TIỀN XỬ LÝ ẢNH ===
-def preprocess_for_ddddocr(path_anh):
-    """Tiền xử lý ảnh cho ddddocr"""
+# === HÀM LẤY CAPTCHA TỪ API ===
+async def get_captcha_from_api(client, headers):
+    """
+    Gọi trực tiếp API captcha của CSGT
+    Trả về: (image_bytes, security_token)
+    """
     try:
-        anh = cv2.imread(path_anh)
+        # 1. Lấy security token từ trang chủ
+        resp = await client.get("https://gplx.csgt.bocongan.gov.vn/", headers=headers)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        sec_token_input = soup.find('input', {'name': 'securityToken'})
+        if not sec_token_input:
+            return None, None
+        security_token = sec_token_input.get('value')
+        
+        # 2. Gọi API captcha
+        width = 150
+        height = 50
+        timestamp = int(time.time() * 1000)
+        
+        captcha_url = (
+            f"https://gplx.csgt.bocongan.gov.vn/api/Common/Captcha/getCaptcha"
+            f"?returnType=image&site=2005782"
+            f"&width={width}&height={height}"
+            f"&t={timestamp}"
+        )
+        
+        # Headers cho ảnh
+        img_headers = {
+            "User-Agent": headers["User-Agent"],
+            "Accept": "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://gplx.csgt.bocongan.gov.vn/",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        
+        # Gọi API lấy ảnh
+        response = await client.get(captcha_url, headers=img_headers)
+        
+        if response.status_code == 200 and len(response.content) > 1000:
+            # Lưu ảnh để debug
+            with open("captcha_real.png", "wb") as f:
+                f.write(response.content)
+            print(f"   ✅ Đã lấy captcha từ API, kích thước: {len(response.content)} bytes")
+            return response.content, security_token
+        else:
+            print(f"   ❌ Lỗi lấy captcha: Status {response.status_code}, Size {len(response.content) if response.content else 0}")
+            return None, None
+            
+    except Exception as e:
+        print(f"   ❌ Lỗi get_captcha_from_api: {e}")
+        return None, None
+
+# === HÀM TIỀN XỬ LÝ ẢNH ===
+def preprocess_for_ddddocr(image_bytes):
+    """Tiền xử lý ảnh cho ddddocr từ bytes"""
+    try:
+        # Chuyển bytes thành numpy array
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        anh = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if anh is None:
             return None
         
@@ -68,20 +131,22 @@ def preprocess_for_ddddocr(path_anh):
             h = min(cleaned.shape[0] - y, h + 2*padding)
             cleaned = cleaned[y:y+h, x:x+w]
         
+        # Lưu ảnh đã xử lý
         cv2.imwrite("captcha_processed_ddddocr.png", cleaned)
-        return cleaned
+        
+        # Chuyển thành bytes
+        _, img_encoded = cv2.imencode('.png', cleaned)
+        return img_encoded.tobytes()
         
     except Exception as e:
         print(f"⚠️ Lỗi tiền xử lý: {e}")
         return None
 
 # === HÀM ĐỌC CAPTCHA ===
-def doc_captcha_ddddocr(path_anh="captcha_real.png"):
-    """Đọc captcha với ddddocr"""
+def doc_captcha_ddddocr(image_bytes):
+    """Đọc captcha với ddddocr từ bytes"""
     try:
         # Cách 1: Đọc trực tiếp
-        with open(path_anh, 'rb') as f:
-            image_bytes = f.read()
         captcha_text = ocr.classification(image_bytes)
         
         if captcha_text and 4 <= len(captcha_text) <= 8:
@@ -89,11 +154,9 @@ def doc_captcha_ddddocr(path_anh="captcha_real.png"):
             return captcha_text
         
         # Cách 2: Đọc sau tiền xử lý
-        img_processed = preprocess_for_ddddocr(path_anh)
-        if img_processed is not None:
-            _, img_encoded = cv2.imencode('.png', img_processed)
-            img_bytes = img_encoded.tobytes()
-            captcha_text2 = ocr.classification(img_bytes)
+        processed_bytes = preprocess_for_ddddocr(image_bytes)
+        if processed_bytes:
+            captcha_text2 = ocr.classification(processed_bytes)
             if captcha_text2 and 4 <= len(captcha_text2) <= 8:
                 print(f"   ✅ Đọc sau xử lý: {captcha_text2}")
                 return captcha_text2
@@ -105,334 +168,297 @@ def doc_captcha_ddddocr(path_anh="captcha_real.png"):
         return None
 
 # === HÀM GỬI DỮ LIỆU LÊN GOV ===
-# async def gui_len_gov(gplx_number, dob, gplx_type="PET", captcha_code=""):
-#     """
-#     Gửi dữ liệu lên Bộ Công An
-#     Trả về: (response_data, is_captcha_error)
-#     """
-#     async with async_playwright() as p:
-#         browser = await p.chromium.launch(headless=True)
-#         context = await browser.new_context(
-#             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-#             locale="vi-VN"
-#         )
-#         page = await context.new_page()
-#         
-#         try:
-#             await page.goto("https://gplx.csgt.bocongan.gov.vn/", wait_until="networkidle")
-#             security_token = await page.locator("input[name='securityToken']").get_attribute("value")
-#             
-#             # Lấy captcha mới
-#             captcha_selector = ".img-cap-mobile a.captcha-refresh img"
-#             await page.wait_for_selector(captcha_selector, timeout=5000)
-#             captcha_element = await page.query_selector(captcha_selector)
-#             await captcha_element.screenshot(path="captcha_real.png")
-#             
-#             # Đọc captcha
-#             if not captcha_code:
-#                 print("   📸 Đang đọc captcha với ddddocr...")
-#                 captcha_code = doc_captcha_ddddocr("captcha_real.png")
-#                 
-#                 if not captcha_code:
-#                     print("   ⚠️ ddddocr không đọc được, thử lại...")
-#                     if os.path.exists("captcha_processed_ddddocr.png"):
-#                         with open("captcha_processed_ddddocr.png", 'rb') as f:
-#                             img_bytes = f.read()
-#                         captcha_code = ocr.classification(img_bytes)
-#                     
-#                     if not captcha_code:
-#                         print("   ❌ Không đọc được captcha tự động!")
-#                         return {"status": "captcha_error", "message": "Không đọc được captcha"}, True
-#             
-#             print(f"   🔐 Mã captcha: {captcha_code}")
-#             
-#             # Chuẩn bị payload
-#             choose_gplx = "2" if gplx_type == "PET" else "1"
-#             
-#             payload_data = {
-#                 "type": "",
-#                 "fields[formTypeId]": "565f96637f8b9af6558b4567",
-#                 "fields[chooseGPLX]": str(choose_gplx),
-#                 "fields[codeGPLX]": str(gplx_number),
-#                 "fields[birthDate]": str(dob),
-#                 "fields[birthDateType2]": "",
-#                 "captcha_code": str(captcha_code).lower().strip(),
-#                 "securityToken": str(security_token),
-#                 "submitFormId": "8",
-#                 "moduleId": "8"
-#             }
-#             
-#             # Gửi request
-#             api_url = "/api/Project/GPLX/ApiSearchGPLX/sendRequest?site=2005782"
-#             raw_response = await page.evaluate(
-#                 f"""async (formDataObj) => {{
-#                     const searchParams = new URLSearchParams();
-#                     for (const key in formDataObj) {{
-#                         searchParams.append(key, formDataObj[key]);
-#                     }}
-#                     
-#                     const res = await fetch('{api_url}', {{
-#                         method: 'POST',
-#                         headers: {{
-#                             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-#                             'Accept': 'application/json, text/plain, */*'
-#                         }},
-#                         body: searchParams.toString()
-#                     }});
-#                     return res.text();
-#                 }}""",
-#                 payload_data
-#             )
-#             
-#             # === LOG CHI TIẾT RESPONSE ===
-#             print(f"\n   📥 RAW RESPONSE:")
-#             print(f"   {'-' * 50}")
-#             print(f"   {raw_response[:500]}")  # In 500 ký tự đầu
-#             print(f"   {'-' * 50}")
-#             
-#             # Lưu response vào file để debug
-#             with open("response_debug.txt", "w", encoding='utf-8') as f:
-#                 f.write(raw_response)
-#             
-#             # === XỬ LÝ RESPONSE ===
-#             if raw_response.strip() == "BotDetect":
-#                 return {"status": "captcha_error", "message": "Sai mã captcha (BotDetect)"}, True
-#             
-#             # Thử parse JSON
-#             try:
-#                 data = json.loads(raw_response)
-#                 print(f"   ✅ Parse JSON thành công")
-#                 
-#                 # === QUAN TRỌNG: ƯU TIÊN HIỂN THỊ DỮ LIỆU ===
-#                 # Nếu có dữ liệu (dù status có thể không phải success)
-#                 if data:
-#                     # Kiểm tra nếu data là dict
-#                     if isinstance(data, dict):
-#                         # Nếu có key 'data' và có giá trị
-#                         if 'data' in data and data['data']:
-#                             return {"status": "success", "data": data['data'], "raw": data}, False
-#                         
-#                         # Nếu có key 'status' và các key khác
-#                         if 'status' in data:
-#                             # Dù status là gì, nếu có dữ liệu thì vẫn hiển thị
-#                             if len(data) > 1:  # Có thêm keys ngoài status
-#                                 return {"status": "success", "data": data, "raw": data}, False
-#                         
-#                         # Kiểm tra message có phải lỗi không
-#                         msg = data.get('message', '').lower()
-#                         if 'không tìm thấy' in msg or 'not found' in msg:
-#                             return {"status": "not_found", "message": msg}, False
-#                         
-#                         if 'captcha' in msg or 'mã bảo mật' in msg:
-#                             return data, True
-#                         
-#                         # Nếu có dữ liệu (không rỗng)
-#                         if data:
-#                             return {"status": "success", "data": data}, False
-#                     
-#                     # Nếu data là list
-#                     elif isinstance(data, list):
-#                         if data:
-#                             return {"status": "success", "data": data}, False
-#                         else:
-#                             return {"status": "not_found", "message": "Không tìm thấy dữ liệu"}, False
-#                     
-#                     # Các kiểu dữ liệu khác
-#                     else:
-#                         return {"status": "success", "data": data}, False
-#                 
-#                 # Data rỗng
-#                 else:
-#                     return {"status": "not_found", "message": "Không tìm thấy dữ liệu"}, False
-#                     
-#             except json.JSONDecodeError as e:
-#                 print(f"   ⚠️ Không phải JSON: {e}")
-#                 
-#                 # Thử tìm kiếm thông tin trong raw_response
-#                 if 'không tìm thấy' in raw_response.lower():
-#                     return {"status": "not_found", "message": "Không tìm thấy thông tin"}, False
-#                 elif 'thành công' in raw_response.lower():
-#                     return {"status": "success", "data": raw_response}, False
-#                 else:
-#                     # Nếu có dữ liệu, vẫn trả về
-#                     if raw_response and len(raw_response) > 10:
-#                         return {"status": "success", "data": raw_response}, False
-#                     else:
-#                         return {"status": "unknown", "data": raw_response}, False
-#                 
-#         except Exception as e:
-#             print(f"   ❌ Lỗi: {e}")
-#             traceback.print_exc()
-#             return {"status": "error", "message": f"Lỗi: {str(e)}"}, False
-#         finally:
-#             await browser.close()
-# 
-# # === HÀM TRA CỨU CHÍNH ===
-# async def tra_cuu_gplx():
-#     """
-#     Hàm chính: Tự động lặp lại khi sai captcha
-#     """
-#     print("\n" + "=" * 60)
-#     print("🚔 HỆ THỐNG TRA CỨU GPLX - TỰ ĐỘNG HIỂN THỊ DỮ LIỆU")
-#     print("=" * 60)
-#     
-#     # === NHẬP THÔNG TIN ===
-#     print("\n📝 NHẬP THÔNG TIN TRA CỨU:")
-#     gplx = input("   Số GPLX: ").replace(" ", "").strip()
-#     dob = input("   Ngày sinh (dd/mm/yyyy): ").replace(" ", "").strip()
-#     loai = input("   Loại bằng (1: PET, 2: Giấy cũ) [1]: ").strip()
-#     
-#     loai_bang = "OLD" if loai == "2" else "PET"
-#     
-#     if not gplx or not dob:
-#         print("❌ Không được bỏ trống!")
-#         return
-#     
-#     print("\n" + "=" * 60)
-#     print("📋 THÔNG TIN TRA CỨU:")
-#     print(f"   - Số GPLX: {gplx}")
-#     print(f"   - Ngày sinh: {dob}")
-#     print(f"   - Loại bằng: {'PET' if loai_bang == 'PET' else 'Giấy cũ'}")
-#     print(f"   - Số lần thử tối đa: {MAX_RETRIES}")
-#     print("=" * 60)
-#     
-#     print("\n🤖 ĐANG TỰ ĐỘNG TRA CỨU...")
-#     print("   (Sẽ tự động lặp lại khi sai captcha)")
-#     print("-" * 60)
-#     
-#     # === VÒNG LẶP ===
-#     so_lan_thu = 0
-#     captcha_fail_count = 0
-#     
-#     while so_lan_thu < MAX_RETRIES:
-#         so_lan_thu += 1
-#         
-#         print(f"\n🔄 LẦN THỬ {so_lan_thu}/{MAX_RETRIES}")
-#         print("   ⏳ Đang lấy captcha mới...")
-#         
-#         result, is_captcha_error = await gui_len_gov(gplx, dob, loai_bang)
-#         
-#         # === XỬ LÝ KẾT QUẢ ===
-#         print(f"\n   📊 KẾT QUẢ XỬ LÝ:")
-#         print(f"   - is_captcha_error: {is_captcha_error}")
-#         print(f"   - Status: {result.get('status', 'unknown')}")
-#         
-#         # === QUAN TRỌNG: KIỂM TRA VÀ HIỂN THỊ DATA NGAY ===
-#         if result.get('status') == 'success' and result.get('data'):
-#             print("\n" + "=" * 60)
-#             print("✅ ✅ ✅ TRA CỨU THÀNH CÔNG! ✅ ✅ ✅")
-#             print("=" * 60)
-#             
-#             data = result['data']
-#             print("\n📋 THÔNG TIN CHI TIẾT:")
-#             
-#             # Hiển thị dữ liệu dạng đẹp
-#             if isinstance(data, dict):
-#                 # Nếu data có key 'data' lồng bên trong
-#                 if 'data' in data and data['data']:
-#                     data = data['data']
-#                 
-#                 # In từng field
-#                 for key, value in data.items():
-#                     if value:
-#                         print(f"   - {key}: {value}")
-#                     else:
-#                         print(f"   - {key}: (trống)")
-#                         
-#             elif isinstance(data, list):
-#                 for idx, item in enumerate(data, 1):
-#                     print(f"\n   📌 Kết quả {idx}:")
-#                     if isinstance(item, dict):
-#                         for key, value in item.items():
-#                             if value:
-#                                 print(f"      - {key}: {value}")
-#                     else:
-#                         print(f"      {item}")
-#             else:
-#                 print(f"   {data}")
-#             
-#             print("\n" + "=" * 60)
-#             print(f"📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
-#             
-#             # Lưu kết quả vào file
-#             with open("ket_qua_tra_cuu.json", "w", encoding='utf-8') as f:
-#                 json.dump(result, f, ensure_ascii=False, indent=2)
-#             print("💾 Đã lưu kết quả vào ket_qua_tra_cuu.json")
-#             
-#             return
-#         
-#         # === XỬ LÝ CAPTCHA ERROR ===
-#         if is_captcha_error:
-#             captcha_fail_count += 1
-#             print(f"\n   ❌ Sai CAPTCHA! (Lần {captcha_fail_count})")
-#             print(f"   ⏳ Đợi {DELAY_BETWEEN_RETRIES}s rồi thử lại...")
-#             time.sleep(DELAY_BETWEEN_RETRIES)
-#             continue
-#         
-#         # === XỬ LÝ NOT FOUND ===
-#         if result.get('status') == 'not_found':
-#             print("\n" + "=" * 60)
-#             print("📋 KHÔNG TÌM THẤY THÔNG TIN TRONG CSDL!")
-#             print("=" * 60)
-#             print("   -> Kiểm tra lại số GPLX và ngày sinh")
-#             print("   -> Thử loại bằng khác")
-#             print(f"\n📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
-#             return
-#         
-#         # === XỬ LÝ LỖI KHÁC ===
-#         if 'message' in result:
-#             msg = result['message'].lower()
-#             
-#             # Phát hiện captcha error qua message
-#             if 'captcha' in msg or 'mã bảo mật' in msg:
-#                 captcha_fail_count += 1
-#                 print(f"\n   ❌ Sai CAPTCHA! (Lần {captcha_fail_count})")
-#                 print(f"   ⏳ Đợi {DELAY_BETWEEN_RETRIES}s rồi thử lại...")
-#                 time.sleep(DELAY_BETWEEN_RETRIES)
-#                 continue
-#             
-#             # Phát hiện not found qua message
-#             if 'không tìm thấy' in msg or 'not found' in msg:
-#                 print("\n" + "=" * 60)
-#                 print("📋 KHÔNG TÌM THẤY THÔNG TIN TRONG CSDL!")
-#                 print("=" * 60)
-#                 print(f"   Message: {result['message']}")
-#                 print(f"\n📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
-#                 return
-#             
-#             # Lỗi khác
-#             print(f"\n⚠️ LỖI: {result['message']}")
-#             print(f"   ⏳ Đợi {DELAY_BETWEEN_RETRIES}s rồi thử lại...")
-#             time.sleep(DELAY_BETWEEN_RETRIES)
-#             continue
-#         
-#         # === UNKNOWN - NHƯNG VẪN HIỂN THỊ DATA NẾU CÓ ===
-#         if result and result.get('data'):
-#             print("\n" + "=" * 60)
-#             print("✅ CÓ DỮ LIỆU TRẢ VỀ (dù status không xác định)")
-#             print("=" * 60)
-#             print(f"\n📋 Dữ liệu: {json.dumps(result['data'], ensure_ascii=False, indent=2)}")
-#             print("\n" + "=" * 60)
-#             return
-#         
-#         # Thử lại
-#         print("   ⚠️ Kết quả không xác định, thử lại...")
-#         time.sleep(DELAY_BETWEEN_RETRIES)
-#     
-#     # Hết số lần
-#     print("\n" + "=" * 60)
-#     print("❌ ĐÃ HẾT SỐ LẦN THỬ!")
-#     print("=" * 60)
-#     print(f"\n📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
-# 
-# # === TEST ===
+async def gui_len_gov(gplx_number, dob, gplx_type="PET", captcha_code=""):
+    """
+    Gửi dữ liệu lên Bộ Công An
+    Trả về: (response_data, is_captcha_error)
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    
+    async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
+        try:
+            # Lấy captcha và security token
+            image_bytes, security_token = await get_captcha_from_api(client, headers)
+            
+            if not image_bytes or not security_token:
+                return {"status": "captcha_error", "message": "Không lấy được captcha"}, True
+            
+            # Đọc captcha
+            if not captcha_code:
+                print("   📸 Đang đọc captcha với ddddocr...")
+                captcha_code = doc_captcha_ddddocr(image_bytes)
+                
+                if not captcha_code:
+                    print("   ⚠️ ddddocr không đọc được, thử lại với ảnh đã xử lý...")
+                    if os.path.exists("captcha_processed_ddddocr.png"):
+                        with open("captcha_processed_ddddocr.png", 'rb') as f:
+                            img_bytes = f.read()
+                        captcha_code = ocr.classification(img_bytes)
+                    
+                    if not captcha_code:
+                        print("   ❌ Không đọc được captcha tự động!")
+                        return {"status": "captcha_error", "message": "Không đọc được captcha"}, True
+            
+            print(f"   🔐 Mã captcha: {captcha_code}")
+            
+            # Chuẩn bị payload
+            choose_gplx = "2" if gplx_type == "PET" else "1"
+            
+            payload_data = {
+                "type": "",
+                "fields[formTypeId]": "565f96637f8b9af6558b4567",
+                "fields[chooseGPLX]": str(choose_gplx),
+                "fields[codeGPLX]": str(gplx_number),
+                "fields[birthDate]": str(dob),
+                "fields[birthDateType2]": "",
+                "captcha_code": str(captcha_code).lower().strip(),
+                "securityToken": str(security_token),
+                "submitFormId": "8",
+                "moduleId": "8"
+            }
+            
+            # Gửi request
+            api_url = "https://gplx.csgt.bocongan.gov.vn/api/Project/GPLX/ApiSearchGPLX/sendRequest?site=2005782"
+            
+            req_headers = headers.copy()
+            req_headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+            req_headers["Accept"] = "application/json, text/plain, */*"
+            req_headers["Origin"] = "https://gplx.csgt.bocongan.gov.vn"
+            req_headers["Referer"] = "https://gplx.csgt.bocongan.gov.vn/"
+            
+            res = await client.post(api_url, data=payload_data, headers=req_headers)
+            raw_response = res.text
+            
+            # === LOG CHI TIẾT RESPONSE ===
+            print(f"\n   📥 RAW RESPONSE:")
+            print(f"   {'-' * 50}")
+            print(f"   {raw_response[:500]}")  # In 500 ký tự đầu
+            print(f"   {'-' * 50}")
+            
+            # Lưu response vào file để debug
+            with open("response_debug.txt", "w", encoding='utf-8') as f:
+                f.write(raw_response)
+            
+            # === XỬ LÝ RESPONSE ===
+            if raw_response.strip() == "BotDetect":
+                return {"status": "captcha_error", "message": "Sai mã captcha (BotDetect)"}, True
+            
+            # Thử parse JSON
+            try:
+                data = json.loads(raw_response)
+                print(f"   ✅ Parse JSON thành công")
+                
+                # === QUAN TRỌNG: ƯU TIÊN HIỂN THỊ DỮ LIỆU ===
+                if data:
+                    if isinstance(data, dict):
+                        if 'data' in data and data['data']:
+                            return {"status": "success", "data": data['data'], "raw": data}, False
+                        
+                        if 'status' in data:
+                            if len(data) > 1:
+                                return {"status": "success", "data": data, "raw": data}, False
+                        
+                        msg = data.get('message', '').lower()
+                        if 'không tìm thấy' in msg or 'not found' in msg:
+                            return {"status": "not_found", "message": msg}, False
+                        
+                        if 'captcha' in msg or 'mã bảo mật' in msg:
+                            return data, True
+                        
+                        if data:
+                            return {"status": "success", "data": data}, False
+                    
+                    elif isinstance(data, list):
+                        if data:
+                            return {"status": "success", "data": data}, False
+                        else:
+                            return {"status": "not_found", "message": "Không tìm thấy dữ liệu"}, False
+                    else:
+                        return {"status": "success", "data": data}, False
+                else:
+                    return {"status": "not_found", "message": "Không tìm thấy dữ liệu"}, False
+                    
+            except json.JSONDecodeError as e:
+                print(f"   ⚠️ Không phải JSON: {e}")
+                
+                if 'không tìm thấy' in raw_response.lower():
+                    return {"status": "not_found", "message": "Không tìm thấy thông tin"}, False
+                elif 'thành công' in raw_response.lower():
+                    return {"status": "success", "data": raw_response}, False
+                else:
+                    if raw_response and len(raw_response) > 10:
+                        return {"status": "success", "data": raw_response}, False
+                    else:
+                        return {"status": "unknown", "data": raw_response}, False
+                
+        except Exception as e:
+            print(f"   ❌ Lỗi: {e}")
+            traceback.print_exc()
+            return {"status": "error", "message": f"Lỗi: {str(e)}"}, False
+
+# === HÀM TRA CỨU CHÍNH ===
+async def tra_cuu_gplx():
+    """
+    Hàm chính: Tự động lặp lại khi sai captcha
+    """
+    print("\n" + "=" * 60)
+    print("🚔 HỆ THỐNG TRA CỨU GPLX - TỰ ĐỘNG HIỂN THỊ DỮ LIỆU")
+    print("=" * 60)
+    
+    # === NHẬP THÔNG TIN ===
+    print("\n📝 NHẬP THÔNG TIN TRA CỨU:")
+    gplx = input("   Số GPLX: ").replace(" ", "").strip()
+    dob = input("   Ngày sinh (dd/mm/yyyy): ").replace(" ", "").strip()
+    loai = input("   Loại bằng (1: PET, 2: Giấy cũ) [1]: ").strip()
+    
+    loai_bang = "OLD" if loai == "2" else "PET"
+    
+    if not gplx or not dob:
+        print("❌ Không được bỏ trống!")
+        return
+    
+    print("\n" + "=" * 60)
+    print("📋 THÔNG TIN TRA CỨU:")
+    print(f"   - Số GPLX: {gplx}")
+    print(f"   - Ngày sinh: {dob}")
+    print(f"   - Loại bằng: {'PET' if loai_bang == 'PET' else 'Giấy cũ'}")
+    print(f"   - Số lần thử tối đa: {MAX_RETRIES}")
+    print("=" * 60)
+    
+    print("\n🤖 ĐANG TỰ ĐỘNG TRA CỨU...")
+    print("   (Sẽ tự động lặp lại khi sai captcha)")
+    print("-" * 60)
+    
+    # === VÒNG LẶP ===
+    so_lan_thu = 0
+    captcha_fail_count = 0
+    
+    while so_lan_thu < MAX_RETRIES:
+        so_lan_thu += 1
+        
+        print(f"\n🔄 LẦN THỬ {so_lan_thu}/{MAX_RETRIES}")
+        print("   ⏳ Đang lấy captcha mới...")
+        
+        result, is_captcha_error = await gui_len_gov(gplx, dob, loai_bang)
+        
+        # === XỬ LÝ KẾT QUẢ ===
+        print(f"\n   📊 KẾT QUẢ XỬ LÝ:")
+        print(f"   - is_captcha_error: {is_captcha_error}")
+        print(f"   - Status: {result.get('status', 'unknown')}")
+        
+        # === QUAN TRỌNG: KIỂM TRA VÀ HIỂN THỊ DATA NGAY ===
+        if result.get('status') == 'success' and result.get('data'):
+            print("\n" + "=" * 60)
+            print("✅ ✅ ✅ TRA CỨU THÀNH CÔNG! ✅ ✅ ✅")
+            print("=" * 60)
+            
+            data = result['data']
+            print("\n📋 THÔNG TIN CHI TIẾT:")
+            
+            if isinstance(data, dict):
+                if 'data' in data and data['data']:
+                    data = data['data']
+                
+                for key, value in data.items():
+                    if value:
+                        print(f"   - {key}: {value}")
+                    else:
+                        print(f"   - {key}: (trống)")
+                        
+            elif isinstance(data, list):
+                for idx, item in enumerate(data, 1):
+                    print(f"\n   📌 Kết quả {idx}:")
+                    if isinstance(item, dict):
+                        for key, value in item.items():
+                            if value:
+                                print(f"      - {key}: {value}")
+                    else:
+                        print(f"      {item}")
+            else:
+                print(f"   {data}")
+            
+            print("\n" + "=" * 60)
+            print(f"📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
+            
+            with open("ket_qua_tra_cuu.json", "w", encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            print("💾 Đã lưu kết quả vào ket_qua_tra_cuu.json")
+            
+            return
+        
+        # === XỬ LÝ CAPTCHA ERROR ===
+        if is_captcha_error:
+            captcha_fail_count += 1
+            print(f"\n   ❌ Sai CAPTCHA! (Lần {captcha_fail_count})")
+            print(f"   ⏳ Đợi {DELAY_BETWEEN_RETRIES}s rồi thử lại...")
+            time.sleep(DELAY_BETWEEN_RETRIES)
+            continue
+        
+        # === XỬ LÝ NOT FOUND ===
+        if result.get('status') == 'not_found':
+            print("\n" + "=" * 60)
+            print("📋 KHÔNG TÌM THẤY THÔNG TIN TRONG CSDL!")
+            print("=" * 60)
+            print("   -> Kiểm tra lại số GPLX và ngày sinh")
+            print("   -> Thử loại bằng khác")
+            print(f"\n📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
+            return
+        
+        # === XỬ LÝ LỖI KHÁC ===
+        if 'message' in result:
+            msg = result['message'].lower()
+            
+            if 'captcha' in msg or 'mã bảo mật' in msg:
+                captcha_fail_count += 1
+                print(f"\n   ❌ Sai CAPTCHA! (Lần {captcha_fail_count})")
+                print(f"   ⏳ Đợi {DELAY_BETWEEN_RETRIES}s rồi thử lại...")
+                time.sleep(DELAY_BETWEEN_RETRIES)
+                continue
+            
+            if 'không tìm thấy' in msg or 'not found' in msg:
+                print("\n" + "=" * 60)
+                print("📋 KHÔNG TÌM THẤY THÔNG TIN TRONG CSDL!")
+                print("=" * 60)
+                print(f"   Message: {result['message']}")
+                print(f"\n📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
+                return
+            
+            print(f"\n⚠️ LỖI: {result['message']}")
+            print(f"   ⏳ Đợi {DELAY_BETWEEN_RETRIES}s rồi thử lại...")
+            time.sleep(DELAY_BETWEEN_RETRIES)
+            continue
+        
+        # === UNKNOWN ===
+        if result and result.get('data'):
+            print("\n" + "=" * 60)
+            print("✅ CÓ DỮ LIỆU TRẢ VỀ (dù status không xác định)")
+            print("=" * 60)
+            print(f"\n📋 Dữ liệu: {json.dumps(result['data'], ensure_ascii=False, indent=2)}")
+            print("\n" + "=" * 60)
+            return
+        
+        print("   ⚠️ Kết quả không xác định, thử lại...")
+        time.sleep(DELAY_BETWEEN_RETRIES)
+    
+    print("\n" + "=" * 60)
+    print("❌ ĐÃ HẾT SỐ LẦN THỬ!")
+    print("=" * 60)
+    print(f"\n📊 Thống kê: {so_lan_thu} lần thử, {captcha_fail_count} lần sai captcha")
+
+# === TEST ===
 def test_ocr():
     """Test OCR"""
     print("\n🧪 TEST DDDDOCR CAPTCHA")
     print("=" * 50)
     
     if os.path.exists("captcha_real.png"):
-        result = doc_captcha_ddddocr("captcha_real.png")
+        with open("captcha_real.png", 'rb') as f:
+            image_bytes = f.read()
+        result = doc_captcha_ddddocr(image_bytes)
         if result:
             print(f"\n✅ Kết quả: {result}")
         else:

@@ -12,6 +12,8 @@ import httpx
 from bs4 import BeautifulSoup
 import re
 import io
+import cv2
+import numpy as np
 import openpyxl
 import logging
 from logging.handlers import RotatingFileHandler
@@ -498,6 +500,17 @@ async def verify_gplx_ws(websocket: WebSocket):
                         await websocket.send_json({"type": "error", "message": "Không tải được mã Captcha."})
                         return
                     image_bytes = cap_resp.content
+                    
+                    # Cắt/Resize lại captcha về đúng tỷ lệ 150x50 để ddddocr đọc được và hiển thị đúng
+                    try:
+                        nparr = np.frombuffer(image_bytes, np.uint8)
+                        img_cv2 = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        if img_cv2 is not None:
+                            img_cv2 = cv2.resize(img_cv2, (150, 50))
+                            _, encoded_img = cv2.imencode('.png', img_cv2)
+                            image_bytes = encoded_img.tobytes()
+                    except Exception as e:
+                        logger.error(f"Lỗi resize ảnh: {e}")
 
                     async def submit_form(cap_code: str):
                         payload_data = {

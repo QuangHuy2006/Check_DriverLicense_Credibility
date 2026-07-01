@@ -462,111 +462,95 @@ async def verify_gplx_ws(websocket: WebSocket):
     async with CSGT_SEMAPHORE:
         async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
             try:
-                # 1. Tải trang chủ để lấy securityToken & Cookies
-                resp = await client.get("https://gplx.csgt.bocongan.gov.vn/", headers=headers)
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                sec_token_input = soup.find('input', {'name': 'securityToken'})
-                if not sec_token_input:
-                    await websocket.send_json({"type": "error", "message": "Không thể kết nối với hệ thống CSGT (Thiếu token)."})
-                    return
-                security_token = sec_token_input.get('value')
-                
-                choose_gplx = "1" if loai_bang == "OLD" else "2"
-                
-                # Fix #6: import time đã ở đầu file rồi, bỏ import trong hàm
-                def _build_captcha_url(src: str) -> str:
-                    url = "https://gplx.csgt.bocongan.gov.vn" + src
-                    if '?' in url:
-                        url = re.sub(r't=\d+', f't={int(time.time()*1000)}', url)
-                    return url
-                
-                async def get_and_read_captcha() -> str | None:
-                    captcha_img = soup.select_one(".img-cap-mobile img")
-                    if not captcha_img:
-                        return None
-                    captcha_url = _build_captcha_url(captcha_img.get('src'))
-                    cap_resp = await client.get(captcha_url, headers=headers)
-                    if cap_resp.status_code != 200:
-                        return None
-                    # Fix #1: Không ghi file ra đĩa, truyền thẳng bytes vào RAM
-                    image_bytes = cap_resp.content
-                    # Fix #2: ocr.classification là blocking CPU → chạy trong thread pool
-                    captcha_text = await asyncio.to_thread(ocr.classification, image_bytes)
-                    if captcha_text and 4 <= len(captcha_text) <= 8:
-                        return captcha_text
-                    return None
-                    
-                async def get_manual_captcha_image() -> str | None:
-                    captcha_img = soup.select_one(".img-cap-mobile img")
-                    if not captcha_img:
-                        return None
-                    captcha_url = _build_captcha_url(captcha_img.get('src'))
-                    cap_resp = await client.get(captcha_url, headers=headers)
-                    if cap_resp.status_code == 200:
-                        return base64.b64encode(cap_resp.content).decode('utf-8')
-                    return None
-
-                async def submit_form(cap_code: str):
-                    payload_data = {
-                        "type": "",
-                        "fields[formTypeId]": "565f96637f8b9af6558b4567",
-                        "fields[chooseGPLX]": str(choose_gplx),
-                        "fields[codeGPLX]": str(gplx),
-                        "fields[birthDate]": str(dob),
-                        "fields[birthDateType2]": "",
-                        "captcha_code": str(cap_code).lower().strip(),
-                        "securityToken": str(security_token),
-                        "submitFormId": "8",
-                        "moduleId": "8"
-                    }
-                    
-                    api_url = "https://gplx.csgt.bocongan.gov.vn/api/Project/GPLX/ApiSearchGPLX/sendRequest?site=2005782"
-                    
-                    req_headers = headers.copy()
-                    req_headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
-                    req_headers["Accept"] = "application/json, text/plain, */*"
-                    req_headers["Origin"] = "https://gplx.csgt.bocongan.gov.vn"
-                    req_headers["Referer"] = "https://gplx.csgt.bocongan.gov.vn/"
-                    
-                    res = await client.post(api_url, data=payload_data, headers=req_headers)
-                    return await parse_response_to_data(res.text)
-
-                # === AUTOMATIC OCR LOOP (MAX 2 TIMES) ===
+                # === AUTOMATIC & MANUAL CAPTCHA LOOP ===
                 auto_attempts = 0
                 max_auto = 2
                 success_result = None
+                manual_mode = False
                 
-                while auto_attempts < max_auto:
-                    auto_attempts += 1
-                    await websocket.send_json({"type": "status", "message": f"Đang tự động đọc Captcha (Lần {auto_attempts}/{max_auto})..."})
+                while not success_result:
+                    # 1. Tải trang chủ để lấy securityToken & Cookies MỚI cho MỖI lần thử
+                    resp = await client.get("https://gplx.csgt.bocongan.gov.vn/", headers=headers)
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    sec_token_input = soup.find('input', {'name': 'securityToken'})
+                    if not sec_token_input:
+                        await websocket.send_json({"type": "error", "message": "Không thể kết nối với hệ thống CSGT (Thiếu token)."})
+                        return
+                    security_token = sec_token_input.get('value')
                     
-                    cap_code = await get_and_read_captcha()
+                    choose_gplx = "1" if loai_bang == "OLD" else "2"
                     
-                    if not cap_code:
-                        await websocket.send_json({"type": "status", "message": "OCR không đọc được, tải captcha mới..."})
-                        continue
+                    captcha_img = soup.select_one(".img-cap-mobile img")
+                    if not captcha_img:
+                        await websocket.send_json({"type": "error", "message": "Không tìm thấy mã Captcha từ CSGT."})
+                        return
+                    captcha_url = "https://gplx.csgt.bocongan.gov.vn" + captcha_img.get('src')
+                    if '?' in captcha_url:
+                        captcha_url = re.sub(r't=\d+', f't={int(time.time()*1000)}', captcha_url)
+                    
+                    # Cần header chuẩn để tải ảnh tránh BotDetect
+                    img_headers = headers.copy()
+                    img_headers["Accept"] = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+                    img_headers["Referer"] = "https://gplx.csgt.bocongan.gov.vn/"
+                    
+                    cap_resp = await client.get(captcha_url, headers=img_headers)
+                    if cap_resp.status_code != 200:
+                        await websocket.send_json({"type": "error", "message": "Không tải được mã Captcha."})
+                        return
+                    image_bytes = cap_resp.content
+
+                    async def submit_form(cap_code: str):
+                        payload_data = {
+                            "type": "",
+                            "fields[formTypeId]": "565f96637f8b9af6558b4567",
+                            "fields[chooseGPLX]": str(choose_gplx),
+                            "fields[codeGPLX]": str(gplx),
+                            "fields[birthDate]": str(dob),
+                            "fields[birthDateType2]": "",
+                            "captcha_code": str(cap_code).lower().strip(),
+                            "securityToken": str(security_token),
+                            "submitFormId": "8",
+                            "moduleId": "8"
+                        }
                         
-                    await websocket.send_json({"type": "status", "message": f"Thử Captcha: {cap_code}..."})
-                    result = await submit_form(cap_code)
-                    
-                    if result.get("is_captcha_error"):
-                        await websocket.send_json({"type": "status", "message": "Sai Captcha tự động."})
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        success_result = result
-                        break
-                
-                # === MANUAL CAPTCHA IF AUTO FAILED ===
-                if not success_result:
-                    await websocket.send_json({"type": "status", "message": "Giải Captcha tự động thất bại. Yêu cầu nhập tay."})
-                    
-                    while not success_result:
-                        b64_img = await get_manual_captcha_image()
-                        if not b64_img:
-                            await websocket.send_json({"type": "error", "message": "Không thể tải mã Captcha."})
-                            break
+                        api_url = "https://gplx.csgt.bocongan.gov.vn/api/Project/GPLX/ApiSearchGPLX/sendRequest?site=2005782"
+                        
+                        req_headers = headers.copy()
+                        req_headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+                        req_headers["Accept"] = "application/json, text/plain, */*"
+                        req_headers["Origin"] = "https://gplx.csgt.bocongan.gov.vn"
+                        req_headers["Referer"] = "https://gplx.csgt.bocongan.gov.vn/"
+                        
+                        res = await client.post(api_url, data=payload_data, headers=req_headers)
+                        return await parse_response_to_data(res.text)
+
+                    if not manual_mode:
+                        auto_attempts += 1
+                        await websocket.send_json({"type": "status", "message": f"Đang tự động đọc Captcha (Lần {auto_attempts}/{max_auto})..."})
+                        
+                        captcha_text = await asyncio.to_thread(ocr.classification, image_bytes)
+                        
+                        if not captcha_text or not (4 <= len(captcha_text) <= 8):
+                            await websocket.send_json({"type": "status", "message": "OCR không đọc được, tải captcha mới..."})
+                            if auto_attempts >= max_auto:
+                                manual_mode = True
+                            continue
                             
+                        await websocket.send_json({"type": "status", "message": f"Thử Captcha: {captcha_text}..."})
+                        result = await submit_form(captcha_text)
+                        
+                        if result.get("is_captcha_error"):
+                            await websocket.send_json({"type": "status", "message": "Sai Captcha tự động."})
+                            await asyncio.sleep(0.5)
+                            if auto_attempts >= max_auto:
+                                manual_mode = True
+                            continue
+                        else:
+                            success_result = result
+                            break
+                    else:
+                        # Manual Mode
+                        b64_img = base64.b64encode(image_bytes).decode('utf-8')
                         await websocket.send_json({
                             "type": "require_manual_captcha",
                             "image_base64": b64_img,
@@ -581,16 +565,16 @@ async def verify_gplx_ws(websocket: WebSocket):
                             result = await submit_form(manual_cap)
                             
                             if result.get("is_captcha_error"):
-                                await websocket.send_json({"type": "status", "message": "Bạn đã nhập sai mã Captcha. Thử lại..."})
+                                await websocket.send_json({"type": "status", "message": "Bạn đã nhập sai mã Captcha. Đang tải mã mới..."})
                                 await asyncio.sleep(0.5)
-                                continue
+                                continue # Sẽ quay lại đầu vòng lặp while để lấy captcha mới
                             else:
                                 success_result = result
                                 break
                                 
                         except WebSocketDisconnect:
                             return
-                
+
                 # === XỬ LÝ KẾT QUẢ ===
                 if success_result:
                     status = success_result.get("status")
